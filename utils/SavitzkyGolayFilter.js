@@ -41,6 +41,16 @@ function getLocalFit(i) {
  */
 exports.applyFilter = function(collection, region, startDate, endDate, polynomialOrder, windowSize) {
 
+    function getLocalFit(i) {
+        // Get a slice corresponding to the window_size of the SG smoother
+        var subarray = array.arraySlice(imageAxis, ee.Number(i).int(), ee.Number(i).add(windowSize).int())
+        var predictors = subarray.arraySlice(bandAxis, 2, 2 + polynomialOrder + 1)
+        var response = subarray.arraySlice(bandAxis, 0, 1); // vegetation indice
+        var coeff = predictors.matrixSolve(response)
+            coeff = coeff.arrayProject([0]).arrayFlatten(coeffFlattener);
+        
+        return coeff  
+      }
 
     // Define the axes of variation in the collection array.
     var imageAxis = 0;
@@ -49,7 +59,7 @@ exports.applyFilter = function(collection, region, startDate, endDate, polynomia
     var coeffFlattener = ['constant']
     var indepSelectors = ['constant']
 
-    for(var x=1; x < polynomialOrder; x++) {
+    for(var x=1; x <= polynomialOrder; x++) {
         coeffFlattener.push('x' + x.toString())
         indepSelectors.push('t' + x.toString())
     }
@@ -57,13 +67,12 @@ exports.applyFilter = function(collection, region, startDate, endDate, polynomia
     coeffFlattener = [coeffFlattener];
 
 
-
-
     // Step 1 - Add predictors for SG fitting, using date difference
     var temporalCollection = collection
         .filterBounds(region)
         .filterDate(startDate, endDate)
         .map(setVariables);
+    
     
 
     // Step 2: Set up Savitzky-Golay smoothing
@@ -73,13 +82,20 @@ exports.applyFilter = function(collection, region, startDate, endDate, polynomia
     // Step 3: convert to array type and list
     var array = temporalCollection.toArray();
     var listCollection = temporalCollection.toList(temporalCollection.size());
-
+    
     // it process portions of images to smooth 
     var runLength = ee.List.sequence(0, temporalCollection.size().subtract(windowSize));
+    
 
     // Run the SG solver over the series, and return the smoothed image version
     var sgSeries = runLength.map(function(i) {
-        var ref = ee.Image(temporalCollection.get(ee.Number(i).add(halfWindow)))
-        return getLocalFit(i).multiply(ref.select(indepSelectors)).reduce(ee.Reducer.sum()).copyProperties(ref)
-    })
+        var ref = ee.Image(listCollection.get(ee.Number(i).add(halfWindow)));
+        var fitted = getLocalFit(i).multiply(ref.select(indepSelectors)).reduce(ee.Reducer.sum())
+        return fitted.copyProperties(ref)
+            .set('system:time_start', ref.get('system:time_start'))
+            .set('system:time_end', ref.get('system:time_end'))
+            .set('system:index', ref.get('system:index'))
+    });
+    
+    return [temporalCollection, sgSeries]
 }
