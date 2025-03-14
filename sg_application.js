@@ -1,9 +1,9 @@
 // config
 var region = geometry
-var startDate = '2023-01-01'
+var startDate = '2021-01-01'
 var endDate = '2024-12-30'
 var polynomialOrder = 3
-var windowSize = 9
+var windowSize = 7
 var halfWindow = (windowSize - 1)/2
 
 /**
@@ -97,6 +97,7 @@ function applyFilter(collection, region, startDate, endDate, polynomialOrder, wi
     // it process portions of images to smooth 
     var runLength = ee.List.sequence(0, temporalCollection.size().subtract(windowSize));
     
+  
     
     
     // Run the SG solver over the series, and return the smoothed image version
@@ -175,9 +176,9 @@ function getNdfi(image){
 var landsatCol = ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_32DAY')
       .filterDate(startDate, endDate)
       .filterBounds(region)
-      .map(function(img){return img.unmask(1e-6)})
       .map(getFractions)
       .map(getNdfi)
+      .map(function(img){return img.unmask(-1)})
       .map(function(img){return img.clip(region)});
 
 
@@ -187,6 +188,10 @@ var result = applyFilter(landsatCol, region, startDate, endDate, polynomialOrder
 var srcCol = result[0];
 var fitCol = result[1];
 
+// convert data
+
+var srcCollection = ee.ImageCollection(srcCol);
+var fitCollection = ee.ImageCollection(fitCol);
 
 
 var srcImage = srcCol.slice(1).iterate(
@@ -204,30 +209,28 @@ var fitImage = fitCol.iterate(
 );
 
 
+
+
 // =================================================================================================
 
-print(srcCol)
 
 
-var y = ee.Image(srcImage).select(['ndfi(..)*']).reduceRegion(ee.Reducer.mean(), pt,10).values()
-var xlabels = ee.Image(srcImage).select(['t1(..)*']).reduceRegion(ee.Reducer.first(), pt, 10).values()
-    xlabels = xlabels.map(function(f) { return ee.Number(f).divide(24.0*365.25)}).sort()
-
-var smoothy = ee.Image(fitImage).select(['fitted(..)*']).reduceRegion(ee.Reducer.mean(), pt, 10).values()
-
-print(y, xlabels, smoothy)
-
-var yValues = ee.Array.cat([y, ee.List.repeat(smoothy.get(0), halfWindow).cat(smoothy).cat(ee.List.repeat(smoothy.get(-1), halfWindow))], 1);
-
-var chart = ui.Chart.array.values(yValues, 0, xlabels).setSeriesNames(['Raw', 'Smoothed']).setOptions(
-{
-  title: 'Savitsky-Golay smoothing (order = ' + polynomialOrder + ', window_size = ' + windowSize + ')', 
-  hAxis: {title: 'Time (years after ' + startDate + ')'}, vAxis: {title: 'NDVI'},
-  legend: null,
-  series: { 
-    0: { lineWidth: 0},
-    1: { lineWidth: 2, pointSize: 0, color: 'red' }}
-})
+var chart = ui.Chart.image.series({
+  imageCollection: srcCollection.select('ndfi').merge(fitCollection.select('fitted')),
+  region: pt,
+  reducer: ee.Reducer.mean(),
+  scale: 30, // Ajuste a escala para reduzir o número de pixels processados
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Dados Originais vs. Ajustados',
+  hAxis: {title: 'Tempo'},
+  vAxis: {title: 'Valor do Índice'},
+  lineWidth: 2,
+  series: {
+    0: {color: 'blue', lineDashStyle: [4, 4]},
+    1: {color: 'red'}
+  }
+}).setChartType('LineChart');
 
 print(chart);
 
