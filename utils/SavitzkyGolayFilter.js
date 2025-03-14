@@ -1,16 +1,25 @@
 
 function setVariables(image){
 
-    var timestamp = ee.Date(img.get('system:time_start'));
+    var timestamp = ee.Date(image.get('system:time_start'));
 
-    var ddiff = timestamp.difference(ee.Date(start_date), 'hour');
+    var ddiff = timestamp.difference(ee.Date(startDate), 'hour');
 
     var constant = ee.Image(1).toFloat().rename('constant');
+    
+    image = image.set('date', timestamp)
 
     var features = image.addBands(constant)
 
-    for(var x=1; x < polynomialOrder;x++) {
-        features = features.addBands(ee.Image(ddiff).toFloat().rename('t' + x.toString()))
+    for(var x=1; x <= polynomialOrder;x++) {
+        
+        if (x == 1) {
+            features = features.addBands(ee.Image(ddiff).toFloat().rename('t' + x.toString()))
+        } else {
+            features = features.addBands(ee.Image(ddiff).pow(ee.Image(x)).toFloat().rename('t' + x.toString()))
+        }
+        
+
     }
 
     return features
@@ -91,7 +100,7 @@ exports.applyFilter = function(collection, region, startDate, endDate, polynomia
     var sgSeries = runLength.map(function(i) {
         var ref = ee.Image(listCollection.get(ee.Number(i).add(halfWindow)));
         var fitted = getLocalFit(i).multiply(ref.select(indepSelectors)).reduce(ee.Reducer.sum())
-        return fitted.copyProperties(ref)
+        return fitted.rename('fitted').copyProperties(ref)
             .set('system:time_start', ref.get('system:time_start'))
             .set('system:time_end', ref.get('system:time_end'))
             .set('system:index', ref.get('system:index'))
