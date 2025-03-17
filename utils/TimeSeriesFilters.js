@@ -88,28 +88,30 @@ exports.hantModel = {
 */
 exports.timeWindow = {
 
+
     addTimeRadians: function(image, unit) {
-    
-    var date = ee.Date(image.get('time_start'));
-    var years = date.difference(ee.Date('1970-01-01'), unit);
-    var timeRadians = ee.Image(years.multiply(2 * Math.PI));
-    
-    return image.addBands(timeRadians.rename('t').float());
+        
+        var date = ee.Date(image.get('system:time_start'));
+        var years = date.difference(ee.Date('1970-01-01'), unit);
+        var timeRadians = ee.Image(years.multiply(2 * Math.PI));
+        
+        return image.addBands(timeRadians.rename('t').float());
     
     },
 
     addDateBand: function(image) {
     
-        return image.addBands(image.metadata('time_start').divide(1e18).rename('time'));
+        return image.addBands(image.metadata('system:time_start').divide(1e18).rename('time'));
     
     },
 
     getCollectionFitted: function(collection, winSize, band, unit) {
         
         function smoother(item) {
+
             function applyFit(img){
                 return img.select('time').multiply(fit.select('scale')).add(fit.select('offset'))
-                        .set('time_start',img.get('time_start')).rename(itemBand);
+                        .set('system:time_start',img.get('system:time_start')).rename('fitted');
             }
             
             var itemDate = ee.List(item).get(0);
@@ -117,15 +119,15 @@ exports.timeWindow = {
             var itemUnit = ee.List(item).get(2);
             
             var t = ee.Date(itemDate);
-            var band = itemBand;
+            var bandName = itemBand;
             var unit = itemUnit;
             
             var window = dataset.filterDate(t.advance(-windowSize, unit), t.advance(windowSize, unit));
             
-            var fit = window.select(['time', band])
-                .reduce(ee.Reducer.linearFit());
+            var fit = window.select(['time', bandName]).reduce(ee.Reducer.linearFit());
+            
                 
-            return window.map(applyFit).toList(5);
+            return window.map(applyFit).toList(window.size());
         }
         
         function getMeanWindow(item) {
@@ -133,17 +135,24 @@ exports.timeWindow = {
             var itemBand = ee.List(item).get(1);
             var itemUnit = ee.List(item).get(2);
             
+            var t = ee.Date(itemDate);
+            
             return fittedCollection.filterDate(t.advance(-windowSize, itemUnit),t.advance(windowSize, itemUnit))
-                .mean().set('time_start',t.millis()).rename(itemBand);
+                .mean().set('system:time_start',t.millis()).rename('fitted');
         }
         
-        var dataset = collection.map(this.addDataBand);
+        var dataset = collection.map(this.addDateBand);
         
-        var dates = ee.List(dataset.aggregate_array('time_start'));
+      
+        var dates = ee.List(dataset.aggregate_array('system:time_start'));
         var bandsList = ee.List.repeat(band, dates.size());
         var unitList = ee.List.repeat(unit, dates.size());
         
-        var list = dates.zip(bandsList).zip(unitList)
+        
+        
+        var list = dates.zip(bandsList).zip(unitList).map(function(el) {
+            return ee.List(el).flatten();
+        });
         
         var windowSize = winSize;
         
@@ -154,7 +163,6 @@ exports.timeWindow = {
         return smoothedCol;
     
     }
-
 };
 
 
