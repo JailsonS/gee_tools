@@ -100,58 +100,58 @@ exports.timeWindow = {
 
     addDateBand: function(image) {
     
-    return image.addBands(image.metadata('time_start').divide(1e18).rename('time'));
+        return image.addBands(image.metadata('time_start').divide(1e18).rename('time'));
     
     },
 
     getCollectionFitted: function(collection, winSize, band, unit) {
-    
-    function smoother(item) {
-        function applyFit(img){
-            return img.select('time').multiply(fit.select('scale')).add(fit.select('offset'))
-                    .set('time_start',img.get('time_start')).rename(itemBand);
+        
+        function smoother(item) {
+            function applyFit(img){
+                return img.select('time').multiply(fit.select('scale')).add(fit.select('offset'))
+                        .set('time_start',img.get('time_start')).rename(itemBand);
+            }
+            
+            var itemDate = ee.List(item).get(0);
+            var itemBand = ee.List(item).get(1);
+            var itemUnit = ee.List(item).get(2);
+            
+            var t = ee.Date(itemDate);
+            var band = itemBand;
+            var unit = itemUnit;
+            
+            var window = dataset.filterDate(t.advance(-windowSize, unit), t.advance(windowSize, unit));
+            
+            var fit = window.select(['time', band])
+                .reduce(ee.Reducer.linearFit());
+                
+            return window.map(applyFit).toList(5);
         }
         
-        var itemDate = ee.List(item).get(0);
-        var itemBand = ee.List(item).get(1);
-        var itemUnit = ee.List(item).get(2);
-        
-        var t = ee.Date(itemDate);
-        var band = itemBand;
-        var unit = itemUnit;
-        
-        var window = dataset.filterDate(t.advance(-windowSize, unit), t.advance(windowSize, unit));
-        
-        var fit = window.select(['time', band])
-            .reduce(ee.Reducer.linearFit());
+        function getMeanWindow(item) {
+            var itemDate = ee.List(item).get(0);
+            var itemBand = ee.List(item).get(1);
+            var itemUnit = ee.List(item).get(2);
             
-        return window.map(applyFit).toList(5);
-    }
-    
-    function getMeanWindow(item) {
-        var itemDate = ee.List(item).get(0);
-        var itemBand = ee.List(item).get(1);
-        var itemUnit = ee.List(item).get(2);
+            return fittedCollection.filterDate(t.advance(-windowSize, itemUnit),t.advance(windowSize, itemUnit))
+                .mean().set('time_start',t.millis()).rename(itemBand);
+        }
         
-        return fittedCollection.filterDate(t.advance(-windowSize, itemUnit),t.advance(windowSize, itemUnit))
-            .mean().set('time_start',t.millis()).rename(itemBand);
-    }
-    
-    var dataset = collection.map(this.addDataBand);
-    
-    var dates = ee.List(dataset.aggregate_array('time_start'));
-    var bandsList = ee.List.repeat(band, dates.size());
-    var unitList = ee.List.repeat(unit, dates.size());
-    
-    var list = dates.zip(bandsList).zip(unitList)
-    
-    var windowSize = winSize;
-    
-    var fittedCollection = ee.ImageCollection(list.map(smoother).flatten());
-    
-    var smoothedCol = ee.ImageCollection(list.map(getMeanWindow));
-    
-    return smoothedCol;
+        var dataset = collection.map(this.addDataBand);
+        
+        var dates = ee.List(dataset.aggregate_array('time_start'));
+        var bandsList = ee.List.repeat(band, dates.size());
+        var unitList = ee.List.repeat(unit, dates.size());
+        
+        var list = dates.zip(bandsList).zip(unitList)
+        
+        var windowSize = winSize;
+        
+        var fittedCollection = ee.ImageCollection(list.map(smoother).flatten());
+        
+        var smoothedCol = ee.ImageCollection(list.map(getMeanWindow));
+        
+        return smoothedCol;
     
     }
 
@@ -181,75 +181,75 @@ exports.gapFill = {
     },
 
     timeWindowFilter: function(days, collection) {
-    
-    var collectionWithTimeBand = this._collectionWithTimeBand(collection);
+        
+        var collectionWithTimeBand = this._collectionWithTimeBand(collection);
 
 
-    var millis = ee.Number(days).multiply(1000*60*60*24);
-    
-    // -------------------------------------------------------------------------------------------
-    
-    var maxDiff = ee.Filter.maxDifference({
-        difference: millis,
-        leftField: 'time_start',
-        rightField: 'time_start'
-    });
-    
-    // We need a lessThanOrEquals filter to find all images after a given image
-    // This will compare the given image's timestamp against other images' timestamps
-    var lessEqFilter = ee.Filter.lessThanOrEquals({
-        leftField: 'time_start',
-        rightField: 'time_start'
-    });
+        var millis = ee.Number(days).multiply(1000*60*60*24);
+        
+        // -------------------------------------------------------------------------------------------
+        
+        var maxDiff = ee.Filter.maxDifference({
+            difference: millis,
+            leftField: 'time_start',
+            rightField: 'time_start'
+        });
+        
+        // We need a lessThanOrEquals filter to find all images after a given image
+        // This will compare the given image's timestamp against other images' timestamps
+        var lessEqFilter = ee.Filter.lessThanOrEquals({
+            leftField: 'time_start',
+            rightField: 'time_start'
+        });
 
-    // We need a greaterThanOrEquals filter to find all images before a given image
-    // This will compare the given image's timestamp against other images' timestamps
-    var greaterEqFilter = ee.Filter.greaterThanOrEquals({
-        leftField: 'time_start',
-        rightField: 'time_start'
-    });
-    
-    // apply joins
-    // For the first join, we need to match all images that are after the given image.
-    // To do this we need to match 2 conditions
-    // 1. The resulting images must be within the specified time-window of target image
-    // 2. The target image's timestamp must be lesser than the timestamp of resulting images
-    // Combine two filters to match both these conditions
-    
-    var timeWindowFilter = ee.Filter.and(maxDiff, lessEqFilter);
-    
-    // This join will find all images after, sorted in descending order
-    // This will gives us images so that closest is last
-    // -------------------------------------------------------------------------------------------
-    var join1 = ee.Join.saveAll({
-        matchesKey: 'after',
-        ordering: 'time_start',
-        ascending: false
-    });
-    
-    // apply join
-    var joinRes = join1.apply({
-        primary: collectionWithTimeBand,
-        secondary: collectionWithTimeBand,
-        condition: timeWindowFilter
-    });
-    
-    var timeWindowFilter2 = ee.Filter.and(maxDiff, greaterEqFilter);
-    
-    var join2 = ee.Join.saveAll({
-        matchesKey: 'before',
-        ordering: 'time_start',
-        ascending: false
-    });
-    
-    // apply join
-    var joinRes2 = join2.apply({
-        primary: joinRes,
-        secondary: joinRes,
-        condition: timeWindowFilter2
-    });
-    
-    return joinRes2;
+        // We need a greaterThanOrEquals filter to find all images before a given image
+        // This will compare the given image's timestamp against other images' timestamps
+        var greaterEqFilter = ee.Filter.greaterThanOrEquals({
+            leftField: 'time_start',
+            rightField: 'time_start'
+        });
+        
+        // apply joins
+        // For the first join, we need to match all images that are after the given image.
+        // To do this we need to match 2 conditions
+        // 1. The resulting images must be within the specified time-window of target image
+        // 2. The target image's timestamp must be lesser than the timestamp of resulting images
+        // Combine two filters to match both these conditions
+        
+        var timeWindowFilter = ee.Filter.and(maxDiff, lessEqFilter);
+        
+        // This join will find all images after, sorted in descending order
+        // This will gives us images so that closest is last
+        // -------------------------------------------------------------------------------------------
+        var join1 = ee.Join.saveAll({
+            matchesKey: 'after',
+            ordering: 'time_start',
+            ascending: false
+        });
+        
+        // apply join
+        var joinRes = join1.apply({
+            primary: collectionWithTimeBand,
+            secondary: collectionWithTimeBand,
+            condition: timeWindowFilter
+        });
+        
+        var timeWindowFilter2 = ee.Filter.and(maxDiff, greaterEqFilter);
+        
+        var join2 = ee.Join.saveAll({
+            matchesKey: 'before',
+            ordering: 'time_start',
+            ascending: false
+        });
+        
+        // apply join
+        var joinRes2 = join2.apply({
+            primary: joinRes,
+            secondary: joinRes,
+            condition: timeWindowFilter2
+        });
+        
+        return joinRes2;
     
     },
 
