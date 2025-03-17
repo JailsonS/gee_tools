@@ -88,17 +88,6 @@ exports.hantModel = {
 */
 exports.timeWindow = {
 
-
-    addTimeRadians: function(image, unit) {
-        
-        var date = ee.Date(image.get('system:time_start'));
-        var years = date.difference(ee.Date('1970-01-01'), unit);
-        var timeRadians = ee.Image(years.multiply(2 * Math.PI));
-        
-        return image.addBands(timeRadians.rename('t').float());
-    
-    },
-
     addDateBand: function(image) {
     
         return image.addBands(image.metadata('system:time_start').divide(1e18).rename('time'));
