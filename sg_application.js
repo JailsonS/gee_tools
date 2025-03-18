@@ -1,7 +1,7 @@
 var palettes = require('users/gena/packages:palettes');
 var palettesMb = require('users/mapbiomas/modules:Palettes.js');
 var ColorRamp = require('users/joaovsiqueira1/packages:ColorRamp.js');
-
+var oeel=require('users/OEEL/lib:loadAll');
 
 
 // config
@@ -10,12 +10,12 @@ var startDate = '2019-07-01'
 var endDate = '2020-08-30'
 
 var polynomialOrder = 2
-var windowSize = 3
-var halfWindow = (windowSize - 1)/2
-
+var windowSize = 5
+var halfWindow = ee.Number(windowSize).divide(2).floor();
 
 // regular filter
-var daysInterval = 10;
+var daysInterval = 5;
+
 
 
 var years = [
@@ -37,6 +37,18 @@ var assetP2 = 'projects/ee-simex/assets/degradation/dam-frequency-c2';
 
 
 // =================================================================================================
+
+function getNdvi(image) {
+    
+    var ndvi = image.expression('(nir - red) / (nir + red)', {
+      'nir': image.select('nir'),
+      'red': image.select('red')
+    }).rename('ndvi')
+    
+    return image.addBands(ndvi)
+    
+}
+
 
 function getFractions(image) {
       // default endmembers
@@ -348,10 +360,10 @@ var twLinearInterpolateFit = {
           
           
           //apply joins
-          var resBefore = joinBefore.apply({'primary': dataset,'secondary': dataset,'condition': maxDiffAndLt});
-          var resAfter = joinAfter.apply({'primary': resBefore,'secondary': resBefore,'condition': maxDiffAndGt});
+          var resAfter = joinAfter.apply({'primary': dataset,'secondary': dataset,'condition': maxDiffAndLt});
+          var resBefore = joinBefore.apply({'primary': resAfter,'secondary': resAfter,'condition': maxDiffAndGt});
           
-          return resAfter;
+          return resBefore;
           
       },
       
@@ -422,26 +434,26 @@ var sgFilter = {
    * 
    */
   setVariables: function (image){
+    
+      image = ee.Image(image)
   
       var timestamp = ee.Date(image.get('system:time_start'));
-  
       var ddiff = timestamp.difference(ee.Date(startDate), 'hour');
-  
       var constant = ee.Image(1).toFloat().rename('constant');
       
-      image = image.set('date', timestamp)
+      image = image
+          .set('system:time_start', image.get('system:time_start'))
+          .set('system:time_end', image.get('system:time_end'))
   
       var features = image.addBands(constant)
   
       for(var x=1; x <= polynomialOrder;x++) {
           
           if (x == 1) {
-              features = features.addBands(ee.Image(ddiff).toFloat().rename('t' + x.toString()))
+              features = features.addBands(ee.Image(ddiff).toFloat().rename('t'))
           } else {
               features = features.addBands(ee.Image(ddiff).pow(ee.Image(x)).toFloat().rename('t' + x.toString()))
           }
-          
-  
       }
   
       return features
@@ -462,12 +474,14 @@ var sgFilter = {
       function getCoefFit(i) {
           // Obtém um subconjunto da matriz
           var subarray = array.arraySlice(imageAxis, ee.Number(i).int(), ee.Number(i).add(windowSize).int());
+          //var predictors = subarray.arraySlice(bandAxis, 2, 2 + polynomialOrder + 1);
           var predictors = subarray.arraySlice(bandAxis, 1, 1 + polynomialOrder + 1);
           var response = subarray.arraySlice(bandAxis, 0, 1); // Índice de vegetação
           
   
           // Verifica se a matriz pode ser invertida usando matrixPseudoInverse()
-          var coeff = predictors.matrixPseudoInverse().matrixMultiply(response);
+          //var coeff = predictors.matrixPseudoInverse().matrixMultiply(response);
+          var coeff = predictors.matrixSolve(response);
   
           coeff = coeff.arrayProject([0]).arrayFlatten(coeffFlattener);
           
@@ -482,20 +496,25 @@ var sgFilter = {
       var indepSelectors = ['constant']
   
       for(var x=1; x <= polynomialOrder; x++) {
-          coeffFlattener.push('x' + x.toString())
-          indepSelectors.push('t' + x.toString())
+        
+          if(x == 1) {
+              coeffFlattener.push('x')
+              indepSelectors.push('t')
+          } else {
+              coeffFlattener.push('x' + x.toString())
+              indepSelectors.push('t' + x.toString())
+          }
+        
+
       }
   
       coeffFlattener = [coeffFlattener];
   
   
       // Add predictors for SG fitting, using date difference
-      var temporalCollection = collection
-          .filterBounds(region)
-          .filterDate(startDate, endDate)
-          .select(targetVar)
-          .map(this.setVariables);
-      
+      var temporalCollection = collection.select(targetVar)
+          .map(this.setVariables)
+          .sort('system:time_start');
       
   
       // Step 3: convert to array type and list
@@ -514,18 +533,19 @@ var sgFilter = {
       var sgSeries = runLength.map(function(i) {
           var ref = ee.Image(listCollection.get(ee.Number(i).add(halfWindow)));
           var fitted = getCoefFit(i).multiply(ref.select(indepSelectors)).reduce(ee.Reducer.sum())
-          return fitted.rename('fitted').copyProperties(ref)
+          return fitted.rename(targetVar[0] + '_fitted').copyProperties(ref)
               .set('system:time_start', ref.get('system:time_start'))
               .set('system:time_end', ref.get('system:time_end'))
               .set('system:index', ref.get('system:index'))
       });
       
-      return [listCollection, sgSeries]
+      return ee.ImageCollection(sgSeries)
   }
 
 
 
 }
+
 
 
 // =================================================================================================
@@ -540,22 +560,21 @@ var disturbanceAll = disturbance.filter(ee.Filter.eq('year', 2020));
 // =================================================================================================
 
 
-//var landsatColMosaic = ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_32DAY')
-//      .filterDate(startDate, endDate)
-//      .filterBounds(region)
-//      .map(getFractions)
-//      .map(getNdfi)
-//      .map(function(img){return img.unmask(-1)})
-//      .map(function(img){return img.clip(region)});
-
-
-var landsatCol = getCollection(startDate, endDate, 100, region)
-      .map(removeCloud)
-      //.map(function(img){return img.unmask(-1)})
+var landsatCol = ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_32DAY')
+      .filterDate(startDate, endDate)
+      .filterBounds(region)
       .map(getFractions)
       .map(getNdfi)
-      .select(['ndfi'])
       .map(function(img){return img.clip(region)});
+
+
+//var landsatCol = getCollection(startDate, endDate, 100, region)
+//      .map(removeCloud)
+//      .map(getFractions)
+//      .map(getNdfi)
+//      .map(getNdvi)
+//      .map(function(img){return img.clip(region)})
+//      //.map(function(image){return image.unmask(0).clip(region)});
       
 
 
@@ -563,20 +582,29 @@ var landsatCol = getCollection(startDate, endDate, 100, region)
 
 
 
-var timeWinInterpolated = twLinearInterpolateFit.getCollectionFitted(landsatCol, daysInterval, 45)
-    .filter('type == "interpolated"').select('ndfi')
+var regCollection = twLinearInterpolateFit.getCollectionFitted(landsatCol.select('ndfi'), daysInterval, 45)
+    .select('ndfi')
+    .map(function(image){return image.unmask(0).clip(region)})
+
 
 
 // apply Time Window Filter
-var timeWinCollection = twLinearFit.getCollectionFitted(landsatCol, 15, 'ndfi', 'day')
+//var timeWinCollection = twLinearFit.getCollectionFitted(landsatCol.select('ndfi'), 15, 'ndfi', 'day')
 
 
 // apply sg
-var timeWinSgCollection = sgFilter.applyFilter(timeWinInterpolated, region, startDate, endDate, polynomialOrder, windowSize, 'ndfi')
-    timeWinSgCollection = ee.ImageCollection(timeWinSgCollection[1])
-    
-    
-print(timeWinSgCollection)
+var SgCollection = sgFilter.applyFilter(regCollection, region, startDate, endDate, polynomialOrder, windowSize, ['ndfi'])
+    .map(function(image){return image.updateMask(image.neq(0))})
+
+/*
+var timeWinSgCollection = oeel.ImageCollection.SavatskyGolayFilter(
+  timeWinInterpolated, 
+  maxDiffFilter,
+  distanceFunction,
+  polynomialOrder
+)
+*/
+
 
 // =================================================================================================
 
@@ -587,14 +615,24 @@ var vis = {
     'format': 'png'
 };
 
-var imgEx = ee.Image(timeWinSgCollection.filterDate('2020-07-01', '2020-08-20').first());
+var imgExSg = ee.Image(SgCollection.filterDate('2020-05-01', '2020-05-30').select('ndfi_fitted').max());
+var imgExReg = ee.Image(regCollection.filterDate('2020-05-01', '2020-05-30').select('ndfi').first());
 
-Map.addLayer(imgEx, {
+print('sg', SgCollection.filterDate('2020-01-01', '2020-03-20'))
+
+Map.addLayer(imgExSg, {
   palette:['red','orange', 'yellow', 'green'],
   min:-1,
   max:1
 });
 
+/*
+Map.addLayer(imgExReg, {
+  palette:['red','orange', 'yellow', 'green'],
+  min:-1,
+  max:1
+});
+*/
 
 Map.addLayer(disturbanceAll.updateMask(disturbanceAll.gt(1)), vis, 'dam', false);
 
@@ -604,27 +642,62 @@ Map.setOptions('satellite')
 
 var chart = ui.Chart.image.series({
   imageCollection: landsatCol.select('ndfi')
-    //.merge(timeWinSgCollection.select(['fitted'], ['sg fit']))
-    .merge(timeWinInterpolated.select(['ndfi'], ['interp fitt'])),
+    .merge(SgCollection.select(['ndfi_fitted'], ['SG Filter']))
+    .merge(regCollection.select(['ndfi'], ['Reg Col'])),
   region: pt,
   reducer: ee.Reducer.mean(),
   scale: 30, // Ajuste a escala para reduzir o número de pixels processados
   xProperty: 'system:time_start'
 }).setOptions({
-  title: 'Dados Originais vs. Ajustados',
+  title: 'Série temporal de ajustes lineares',
   hAxis: {title: ''},
   vAxis: {title: 'Valor do Índice'},
   interpolateNulls: false,
   lineWidth: 2,
   series: {
-    0: {color: 'black', lineDashStyle: [1, 1], pointSize: 2},
-    1: {color: 'red', lineDashStyle: [1, 1], pointSize: 2},
-    //2: {color: 'blue'}
+    0: {color: 'black', pointSize: 2},
+    1: {color: 'red', pointSize: 2},
+    2: {color: 'blue'}
   }
 }).setChartType('LineChart');
 
 print(chart);
 
 
+// =================================================================================================
+
+var visParam =  {
+    palette:['red','orange', 'yellow', 'green'],
+    min:-1,
+    max:1 
+} 
+
+var visualizeImage = function(image) {
+  return image.visualize(visParam).clip(region).selfMask()
+}
+
+var visCollectionRegular = landsatCol.select(['ndfi'])
+  .map(visualizeImage)
+
+var visualizeSgFiltered = timeWinSgCollection.select(['ndfi_fitted'])
+  .map(visualizeImage)
+
+Export.video.toDrive({
+  collection: visCollectionRegular,
+  description: 'Regular_Time_Series',
+  folder: 'earthengine',
+  fileNamePrefix: 'regular',
+  framesPerSecond: 2,
+  dimensions: 800,
+  region: region})
+  
+Export.video.toDrive({
+  collection: visualizeSgFiltered,
+  description: 'Filtered_Time_Series',
+  folder: 'earthengine',
+  fileNamePrefix: 'sg_filtered',
+  framesPerSecond: 2,
+  dimensions: 800,
+  region: region})
 
 
