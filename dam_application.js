@@ -22,6 +22,24 @@ var listParams = [
     [2010, defaultParams]
 ]
 
+
+// =================================================================================================
+
+
+var assetP1 = 'projects/ee-mapbiomas-imazon/assets/degradation/dam-frequency-c2';
+var assetP2 = 'projects/ee-simex/assets/degradation/dam-frequency-c2';
+
+
+// =================================================================================================
+
+
+var dam = ee.ImageCollection(assetP1).merge(ee.ImageCollection(assetP2));
+
+var disturbance = dam.select('freq_dam');
+
+var disturbanceAll = disturbance.filter(ee.Filter.eq('year', 2010));
+    disturbanceAll = disturbanceAll.reduce(ee.Reducer.sum())//.clip(geometry);
+    
     
 // =================================================================================================
 
@@ -540,7 +558,7 @@ function getCollectionMos(startDate, endDate, region){
 // =================================================================================================
 
 
-exports.getDAM = function(params, roi) {
+var getDAM = function(params, roi) {
     var year = params[0];
     var dictParams = params[1];
 
@@ -607,5 +625,40 @@ exports.getDAM = function(params, roi) {
 
     return output
 }
+
+
+// =================================================================================================
+
+
+var vis = {
+    'min': 1,
+    'max': 5, // o max ´é em  torno de 40, mas para melhorar a vis, foi setado 12
+    'palette': palettes.matplotlib.inferno[7].slice(1),
+    'format': 'png'
+};
+
+listParams.forEach(function(params){
+  
+  var dam = getDAM(params, geometry);
+  
+    Map.addLayer(disturbanceAll, vis, 'dam', false);
+  
+    Map.addLayer(dam, {
+     // min:6, max:75,
+     bands:['freq_dam'],
+      min:1, max:10,
+      palette:palettes.cmocean.Thermal[7]
+    }, 'freq dam');
+    
+
+    Map.addLayer(dam, {
+      min:1, max:10,
+      bands:['freq_dam_df'],
+      palette:palettes.cmocean.Thermal[7]
+    }, 'freq dam df');   
+  
+});
+
+
 
 
