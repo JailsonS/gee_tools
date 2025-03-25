@@ -1,4 +1,3 @@
-var palettes = require('users/gena/packages:palettes');
 
 var polynomialOrder = 2
 var windowSize = 5
@@ -7,22 +6,8 @@ var halfWindow = ee.Number(windowSize).divide(2).floor();
 // regular filter
 var daysInterval = 30;
 
-var targetBands = ['ndfi']
+var targetBands = ['ndfi']  
 
-
-
-var defaultParams = {
-    'tresh_dam_min': -0.250,
-    'tresh_dam_max': -0.095,
-    'tresh_df_min': -0.250,
-    'time_window': 3
-}
-
-var listParams = [
-    [2010, defaultParams]
-]
-
-    
 // =================================================================================================
 
 
@@ -541,6 +526,18 @@ function getCollectionMos(startDate, endDate, region){
 
 
 exports.getDAM = function(params, roi) {
+  
+    var areaRoi = parseFloat(roi.area(0.1).divide(10000).getInfo())
+    
+    print(areaRoi)
+    
+    if(areaRoi > 900){
+        
+        alert('A área da sua geometria é muito grande (> 855ha), atualize a sua página e tente uma área menor')
+        exit;
+      
+    }
+  
     var year = params[0];
     var dictParams = params[1];
 
@@ -560,7 +557,7 @@ exports.getDAM = function(params, roi) {
         .map(getFractions)
         .map(getNdfi)
         .select(['ndfi'])
-        .map(function(image){return image.unmask(0.9).clip(roi)});
+        .map(function(image){return image.unmask(0.95).clip(roi)});
     
     collectionTarget = adjCollection(collectionTarget, startDate, endDate, roi, windowSize, polynomialOrder, targetBands)
         .filterDate(start, end)
@@ -578,7 +575,7 @@ exports.getDAM = function(params, roi) {
 
     var collectionDeviations = collectionTarget.map(function(img) {
         var deviation = img.subtract(medianMonthly)
-            .updateMask(medianMonthly.gt(0.82))
+            .updateMask(medianMonthly.gt(0.85))
             //.updateMask(lulc.eq(3))
             .rename('deviation');
         return deviation.copyProperties(img);

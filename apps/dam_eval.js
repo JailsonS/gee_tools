@@ -10,7 +10,7 @@ var defaultParams = {
 }
 
 var listParams = [
-    [2024, defaultParams]
+    [2010, defaultParams]
 ]
 
 // ======================================================================================================
@@ -58,6 +58,7 @@ var interaface = {
                 }
             },
             "style": {
+                'width': '200px',
                 'padding': '1px',
                 'stretch': 'horizontal',
                 'position': 'top-left'
@@ -73,6 +74,7 @@ var interaface = {
                 }
             },
             "style": {
+                'width': '200px',
                 'padding': '1px',
                 'stretch': 'horizontal',
                 'position': 'top-left'
@@ -84,29 +86,11 @@ var interaface = {
           var dt = interaface.layers.before.drawingTools();
               dt.clear();
           
-          var defaultGeom = ee.Geometry.Polygon([
-              [
-                [
-                  -55.027232999772195,
-                  -12.347199463422708
-                ],
-                [
-                  -53.97941195485032,
-                  -12.347199463422708
-                ],
-                [
-                  -53.97941195485032,
-                  -11.676936280491203
-                ],
-                [
-                  -55.027232999772195,
-                  -11.676936280491203
-                ],
-                [
-                  -55.027232999772195,
-                  -12.347199463422708
-                ]
-              ]
+          var defaultGeom = ee.Geometry.Rectangle([
+            -55.027232999772195, // xmin
+            -12.347199463422708, // ymin
+            -53.97941195485032,  // xmax
+            -11.676936280491203  // ymax
           ])
           
           dt.addLayer([defaultGeom], 'region', 'black', false);
@@ -249,6 +233,7 @@ var interaface = {
     },
     
     initializeLayers: function() {
+      
         var dt = interaface.layers.before.drawingTools();
         var roi = dt.layers().get(0).toGeometry();
         
@@ -350,19 +335,6 @@ var interaface = {
 // ======================================================================================================
 
 interaface.init();
-
-// ======================================================================================================
-
-var vis = {
-    'min': 1,
-    'max': 5, // o max ´é em  torno de 40, mas para melhorar a vis, foi setado 12
-    'palette': palettes.matplotlib.inferno[7].slice(1),
-    'format': 'png'
-};
-
-// ======================================================================================================
-
-
 
 
 

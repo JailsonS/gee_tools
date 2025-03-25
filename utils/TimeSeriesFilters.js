@@ -4,7 +4,7 @@
  * add harmonic model
  * 
 */
-exports.hantModel = {
+exports.HantModel = {
     //NDVIt = β0 + β1t + β2cos(2πωt) + β3sin(2πωt) + …
     
     // independents = [t, constant]
@@ -86,7 +86,9 @@ exports.hantModel = {
 * add time window filter 
 * 
 */
-exports.timeWindow = {
+exports.LinearFit = {
+  
+    // main goal is smooth a time series
 
     addDateBand: function(image) {
     
@@ -94,13 +96,14 @@ exports.timeWindow = {
     
     },
 
-    getCollectionFitted: function(collection, winSize, band, unit) {
+    getCollectionFitted: function(collection, startDate, endDate, winSize, band, unit) {
         
         function smoother(item) {
 
             function applyFit(img){
                 return img.select('time').multiply(fit.select('scale')).add(fit.select('offset'))
-                        .set('system:time_start',img.get('system:time_start')).rename('fitted');
+                        .set('system:time_start', img.get('system:time_start'))
+                        .rename('fitted');
             }
             
             var itemDate = ee.List(item).get(0);
@@ -115,7 +118,6 @@ exports.timeWindow = {
             
             var fit = window.select(['time', bandName]).reduce(ee.Reducer.linearFit());
             
-                
             return window.map(applyFit).toList(window.size());
         }
         
@@ -133,7 +135,14 @@ exports.timeWindow = {
         var dataset = collection.map(this.addDateBand);
         
       
-        var dates = ee.List(dataset.aggregate_array('system:time_start'));
+        //var dates = ee.List(dataset.aggregate_array('system:time_start'));
+        var dates = ee.List.sequence(
+            ee.Date(startDate).millis(),
+            ee.Date(endDate).millis(),
+            ee.Number(daysInterval).multiply(24).multiply(60).multiply(60).multiply(1000)
+        );
+
+
         var bandsList = ee.List.repeat(band, dates.size());
         var unitList = ee.List.repeat(unit, dates.size());
         
@@ -147,7 +156,11 @@ exports.timeWindow = {
         
         var fittedCollection = ee.ImageCollection(list.map(smoother).flatten());
         
-        var smoothedCol = ee.ImageCollection(list.map(getMeanWindow));
+        var smoothedCol = ee.ImageCollection(list.map(getMeanWindow)).map(
+            function(image) {
+                return image.clamp(-1, 1).set('system:time_start', image.get('system:time_start'))
+            }
+        );
         
         return smoothedCol;
     
@@ -157,156 +170,227 @@ exports.timeWindow = {
 
 /**
 * 
-* add gap fill filter with time window
+* add linear interpolation
 * 
 */
 
-exports.gapFill = {
+exports.LinearInterpolation = {
 
-    _collectionWithTimeBand: function(collection) {
-    var colWithTimeBand = collection.map(function(image) {
+    // main goal is fill gaps by using linear interpolation
+    
+    addDateBand: function(image) {
+
         // The time image doesn't have a mask
-        var timeImage = image.metadata('time_start').rename('timestamp');
-        
+        var timeImage = image.metadata('system:time_start').toFloat().rename('time');
+         
         // We set the mask of the time band to be the same as the first band of the image
         var timeImageMasked = timeImage.updateMask(image.mask().select(0));
         
         return image.addBands(timeImageMasked).toFloat();
-    }); 
+
+    },
+
+    timeWindowFilter: function(collection, daysTimeFilter) {
+        
+        var dataset = collection.map(this.addDateBand);
+        
+        var daysMillis = ee.Number(daysTimeFilter).multiply(1000*60*60*24);
+        
+        // filter definitions
+        var maxDiff = ee.Filter.maxDifference({difference: daysMillis,
+          leftField: 'system:time_start',
+          rightField: 'system:time_start'
+        });
+        
+        var ltEqFilter = ee.Filter.lessThanOrEquals({leftField:'system:time_start',rightField:'system:time_start'});
+        var gtEqFilter = ee.Filter.greaterThanOrEquals({leftField: 'system:time_start',rightField: 'system:time_start'});
+        
+        
+        // combine filters
+        var maxDiffAndLt = ee.Filter.and(maxDiff, ltEqFilter);
+        var maxDiffAndGt = ee.Filter.and(maxDiff, gtEqFilter);
+        
+        
+        // join filters 
+        var joinAfter = ee.Join.saveAll({matchesKey: 'after', ordering: 'system:time_start', ascending: false});
+        var joinBefore = ee.Join.saveAll({matchesKey: 'before', ordering: 'system:time_start', ascending: false});
+        
+        
+        //apply joins
+        var resAfter = joinAfter.apply({'primary': dataset,'secondary': dataset,'condition': maxDiffAndLt});
+        var resBefore = joinBefore.apply({'primary': resAfter,'secondary': resAfter,'condition': maxDiffAndGt});
+        
+        return resBefore;
+        
+    },
     
-    return colWithTimeBand;
-    },
+    getCollectionFitted: function(collection, startDate, endDate, daysInterval, daysTimeFilter) {
+      
 
-    timeWindowFilter: function(days, collection) {
-        
-        var collectionWithTimeBand = this._collectionWithTimeBand(collection);
-
-
-        var millis = ee.Number(days).multiply(1000*60*60*24);
-        
-        // -------------------------------------------------------------------------------------------
-        
-        var maxDiff = ee.Filter.maxDifference({
-            difference: millis,
-            leftField: 'time_start',
-            rightField: 'time_start'
-        });
-        
-        // We need a lessThanOrEquals filter to find all images after a given image
-        // This will compare the given image's timestamp against other images' timestamps
-        var lessEqFilter = ee.Filter.lessThanOrEquals({
-            leftField: 'time_start',
-            rightField: 'time_start'
-        });
-
-        // We need a greaterThanOrEquals filter to find all images before a given image
-        // This will compare the given image's timestamp against other images' timestamps
-        var greaterEqFilter = ee.Filter.greaterThanOrEquals({
-            leftField: 'time_start',
-            rightField: 'time_start'
-        });
-        
-        // apply joins
-        // For the first join, we need to match all images that are after the given image.
-        // To do this we need to match 2 conditions
-        // 1. The resulting images must be within the specified time-window of target image
-        // 2. The target image's timestamp must be lesser than the timestamp of resulting images
-        // Combine two filters to match both these conditions
-        
-        var timeWindowFilter = ee.Filter.and(maxDiff, lessEqFilter);
-        
-        // This join will find all images after, sorted in descending order
-        // This will gives us images so that closest is last
-        // -------------------------------------------------------------------------------------------
-        var join1 = ee.Join.saveAll({
-            matchesKey: 'after',
-            ordering: 'time_start',
-            ascending: false
-        });
-        
-        // apply join
-        var joinRes = join1.apply({
-            primary: collectionWithTimeBand,
-            secondary: collectionWithTimeBand,
-            condition: timeWindowFilter
-        });
-        
-        var timeWindowFilter2 = ee.Filter.and(maxDiff, greaterEqFilter);
-        
-        var join2 = ee.Join.saveAll({
-            matchesKey: 'before',
-            ordering: 'time_start',
-            ascending: false
-        });
-        
-        // apply join
-        var joinRes2 = join2.apply({
-            primary: joinRes,
-            secondary: joinRes,
-            condition: timeWindowFilter2
-        });
-        
-        return joinRes2;
-    
-    },
-
-    _interpolateFilter: function(image) {
-        image = ee.Image(image);
-        
-        // We get the list of before and after images from the image property
-        // Mosaic the images so we a before and after image with the closest unmasked pixel
-        
-        var beforeImages = ee.List(image.get('before'));
-        var beforeMosaic = ee.ImageCollection.fromImages(beforeImages).mosaic();
-        
-        var afterImages = ee.List(image.get('after'));
-        var afterMosaic = ee.ImageCollection.fromImages(afterImages).mosaic();
-        
-        // Interpolation formula
-        // y = y1 + (y2-y1)*((t – t1) / (t2 – t1))
-        // y = interpolated image
-        // y1 = before image
-        // y2 = after image
-        // t = interpolation timestamp
-        // t1 = before image timestamp
-        // t2 = after image timestamp
-        
-        // We first compute the ratio (t – t1) / (t2 – t1)
-        
-        // Get image with before and after times
-        var t1 = beforeMosaic.select('timestamp').rename('t1');
-        var t2 = afterMosaic.select('timestamp').rename('t2');
-        
-        var t = image.metadata('time_start').rename('t');
-        
-        var timeImage = ee.Image.cat([t1, t2, t]);
-        
-        var timeRatio = timeImage.expression('(t - t1) / (t2 - t1)', {
-        't': timeImage.select('t'),
-        't1': timeImage.select('t1'),
-        't2': timeImage.select('t2'),
-        });
-        
-        // Compute an image with the interpolated image y
-        var interpolated = beforeMosaic
-        .add((afterMosaic.subtract(beforeMosaic).multiply(timeRatio)));
-        // Replace the masked pixels in the current image with the average value
-        var result = image.unmask(interpolated);
-        
-        return result.copyProperties(image, ['time_start']);
-    },
-
-    applyInterpolate: function(collection) {
-        return ee.ImageCollection(collection.map(this._interpolateFilter));
-    },
-
+        function getInterpolation(image){
+            
+            image = ee.Image(image)
+          
+            var beforeImages = ee.List(image.get('before'));
+            var y1 = ee.ImageCollection.fromImages(beforeImages).mosaic();
+            
+            var afterImages = ee.List(image.get('after'));
+            var y2 = ee.ImageCollection.fromImages(afterImages).mosaic();
+              
+              
+              
+            // get variables
+            var t1 = y1.select('time').rename('t1');
+            var t2 = y2.select('time').rename('t2');
+            var t = image.metadata('system:time_start').rename('t');   
+            
   
+            // aplicamos a interpolação linear
+            var timeRatio = t.subtract(t1).divide(t2.subtract(t1));  // (t - t1) / (t2 - t1)
+            var interpolated = y1.add(y2.subtract(y1).multiply(timeRatio)); // y = y1 + (y2-y1) * ratio
+  
+            
+            return image.unmask(interpolated).copyProperties(image, ['system:time_start'])
+        }
+
+
+
+        var totalDays = ee.Date(endDate).difference(ee.Date(startDate), 'day');
+        var daysToInterpolate = ee.List.sequence(0, totalDays, daysInterval);
+
+        var interpolatedImages = daysToInterpolate.map(function(day) {
+          var image = ee.Image().rename('ndfi').set({
+            'system:index': ee.Number(day).format('%d'),
+            'system:time_start': ee.Date(startDate).advance(day, 'day').millis(),
+            'type': 'interpolated'
+          })
+          return image
+        });
+        
+        var initerpCol = ee.ImageCollection.fromImages(interpolatedImages)
+
+        var collectionToInterpolate = collection.merge(initerpCol);
+      
+
+        var result = this.timeWindowFilter(collectionToInterpolate, daysTimeFilter)
+            .map(getInterpolation);
+
+        return ee.ImageCollection(result);  
+    }
+
 };
 
 
 
+/**
+* 
+* SG Filter
+* 
+*/
+
+exports.SGFilter =  {
+
+    setVariables: function (image){
+        
+        image = ee.Image(image)
+
+        var timestamp = ee.Date(image.get('system:time_start'));
+        var ddiff = timestamp.difference(ee.Date(startDate), 'hour');
+        var constant = ee.Image(1).toFloat().rename('constant');
+        
+        image = image
+            .set('system:time_start', image.get('system:time_start'))
+            .set('system:time_end', image.get('system:time_end'))
+
+        var features = image.addBands(constant)
+
+        for(var x=1; x <= polynomialOrder;x++) {
+            
+            if (x == 1) {
+                features = features.addBands(ee.Image(ddiff).toFloat().rename('t'))
+            } else {
+                features = features.addBands(ee.Image(ddiff).pow(ee.Image(x)).toFloat().rename('t' + x.toString()))
+            }
+        }
+
+        return features
+    },
 
 
+    applyFilter: function (collection, polynomialOrder, windowSize, targetVar) {
+
+        function getCoefFit(i) {
+            // Obtém um subconjunto da matriz
+            var subarray = array.arraySlice(imageAxis, ee.Number(i).int(), ee.Number(i).add(windowSize).int());
+            //var predictors = subarray.arraySlice(bandAxis, 2, 2 + polynomialOrder + 1);
+            var predictors = subarray.arraySlice(bandAxis, 1, 1 + polynomialOrder + 1);
+            var response = subarray.arraySlice(bandAxis, 0, 1); // Índice de vegetação
+            
+
+            // Verifica se a matriz pode ser invertida usando matrixPseudoInverse()
+            //var coeff = predictors.matrixPseudoInverse().matrixMultiply(response);
+            var coeff = predictors.matrixSolve(response);
+
+            coeff = coeff.arrayProject([0]).arrayFlatten(coeffFlattener);
+            
+            return coeff;
+        }
+
+        // Define the axes of variation in the collection array.
+        var imageAxis = 0;
+        var bandAxis = 1;
+
+        var coeffFlattener = ['constant']
+        var indepSelectors = ['constant']
+
+        for(var x=1; x <= polynomialOrder; x++) {
+            
+            if(x == 1) {
+                coeffFlattener.push('x')
+                indepSelectors.push('t')
+            } else {
+                coeffFlattener.push('x' + x.toString())
+                indepSelectors.push('t' + x.toString())
+            }
+            
+
+        }
+
+        coeffFlattener = [coeffFlattener];
+
+
+        // Add predictors for SG fitting, using date difference
+        var temporalCollection = collection.select(targetVar)
+            .map(this.setVariables)
+            .sort('system:time_start');
+        
+
+        // Step 3: convert to array type and list
+        var array = temporalCollection.toArray();
+        var listCollection = temporalCollection.toList(temporalCollection.size());
+        
+
+        
+        // it process portions of images to smooth 
+        var runLength = ee.List.sequence(0, temporalCollection.size().subtract(windowSize));
+        
+        
+        
+        
+        // Run the SG solver over the series, and return the smoothed image version
+        var sgSeries = runLength.map(function(i) {
+            var ref = ee.Image(listCollection.get(ee.Number(i).add(halfWindow)));
+            var fitted = getCoefFit(i).multiply(ref.select(indepSelectors)).reduce(ee.Reducer.sum())
+            return fitted.rename(targetVar[0] + '_fitted').copyProperties(ref)
+                .set('system:time_start', ref.get('system:time_start'))
+                .set('system:time_end', ref.get('system:time_end'))
+                .set('system:index', ref.get('system:index'))
+        });
+        
+        return ee.ImageCollection(sgSeries)
+    }
+
+}
 
 
 
